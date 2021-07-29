@@ -1,34 +1,34 @@
+from typing import Sized
+
 from Sugar import select, zipmap, aggregate, \
 				  tplor, tpland, tplnot, toseq, \
 				  or_selects, and_selects, not_select, full_s, indices, length
 from FunctionalSupport import Unfinished, UnfinishedSequence, UnfinishedSelect
-from Support import RASPTypeError, RASPError, Select, Sequence
+from Support import RASPTypeError, RASPError
 from collections.abc import Iterable
-import sys
 from zzantlr.RASPParser import RASPParser
 
 encoder_name = "s-op"
 
 def strdesc(o,desc_cap=None):
 	if isinstance(o,Unfinished):
-		return o.name
-	if isinstance(o,list):
+		return o.get_name()
+	elif isinstance(o,list):
 		res = "["+", ".join([strdesc(v) for v in o])+"]"
 		if not None is desc_cap and len(res)>desc_cap:
 			return "(list)"
 		else:
 			return res
-	if isinstance(o,dict):
+	elif isinstance(o,dict):
 		res = "{"+", ".join((strdesc(k)+": "+strdesc(o[k])) for k in o)+"}"
 		if not None is desc_cap and len(res)>desc_cap:
 			return "(dict)"
 		else:
 			return res
+	elif isinstance(o,str):
+		return "\""+o+"\""
 	else:
-		if isinstance(o,str):
-			return "\""+o+"\""
-		else:
-			return str(o)
+		return str(o)
 
 
 class RASPValueError(RASPError):
@@ -69,18 +69,13 @@ class ArgsError(Exception):
 		super().__init__("wrong number of args for "+name+\
 						"- expected: "+str(expected)+", got: "+str(got)+".")
 
+
 class NamedVal:
-	def __init__(self,name,val):
+	def __init__(self,name:str,val):
 		self.name = name
 		self.val = val
-
-class NamedValList:
-	def __init__(self,namedvals):
-		self.nvs = namedvals
-
-class JustVal:
-	def __init__(self,val):
-		self.val = val
+	def __str__(self):
+		return f"NamedVal({self.name},{self.val})"
 
 class RASPFunction:
 	def __init__(self,name,enclosing_env,argnames,statement_trees,returnexpr,creator_name):
@@ -90,10 +85,11 @@ class RASPFunction:
 		self.statement_trees = statement_trees
 		self.returnexpr = returnexpr
 		self.creator = creator_name
+
 	def __str__(self):
 		return self.creator + " function: "+self.name+"("+", ".join(self.argnames)+")"
 
-	def __call__(self,*args):
+	def __call__(self,*args) -> NamedVal:
 		top_eval = args[-1]
 		args = args[:-1]
 		env = self.enclosing_env.make_nested([]) # nesting, because function shouldn't affect the enclosing environment
@@ -105,7 +101,7 @@ class RASPFunction:
 		for at in self.statement_trees:
 			evaluator.evaluate(at)
 		res = evaluator.evaluateExprsList(self.returnexpr)
-		return res[0] if len(res)==1 else res
+		return res[0] if len(res)==1 else NamedVal("out", [i.val for i in res])
 
 class Evaluator:
 	def __init__(self,env,repl):
@@ -113,39 +109,40 @@ class Evaluator:
 		self.sequence_running_example = repl.sequence_running_example
 		self.repl = repl
 
-	def evaluate(self,ast):
+	def evaluate(self,ast) -> list[NamedVal]:
 		if ast.expr():
-			return self.evaluateExpr(ast.expr(),from_top=True)
-		if ast.assign():
+			return [self.evaluateExpr(ast.expr())]
+		elif ast.assign():
 			return self.assign(ast.assign())
-		if ast.funcDef():
-			return self.funcDef(ast.funcDef())
-		if ast.draw():
-			return self.draw(ast.draw())
-		if ast.forLoop():
-			return self.forLoop(ast.forLoop())
-		if ast.loadFile():
-			return self.repl.loadFile(ast.loadFile(),self.env)
+		elif ast.funcDef():
+			return [self.funcDef(ast.funcDef())]
+		elif ast.draw():
+			return [self.draw(ast.draw())]
+		elif ast.forLoop():
+			self.forLoop(ast.forLoop())
+			return []
+		elif ast.loadFile():
+			self.repl.loadFile(ast.loadFile(),self.env)
+			return []
+		else:
+			raise NotImplementedError
 
-		# more to come
-		raise NotImplementedError
-
-	def draw(self,ast): 
+	def draw(self,ast) -> NamedVal:
 	# TODO: make at least some rudimentary comparisons of selectors somehow to merge heads idk??????
 	# maybe keep trace of operations used to create them and those with exact same parent s-ops and operations
 	# can get in? would still find eg select(0,0,==) and select(1,1,==) different, but its better than nothing at all
-		unf = self.evaluateExpr(ast.unf)
-		if not isinstance(unf,UnfinishedSequence):
+		unf = self.evaluateExpr(ast.unf).val
+		if not isinstance(unf.val,UnfinishedSequence):
 			raise RASPTypeError("draw expects unfinished sequence, got:",unf)
-		example = self.evaluateExpr(ast.inputseq) if ast.inputseq else self.sequence_running_example
-		if not isinstance(example,str):
+		example = self.evaluateExpr(ast.inputseq).val if ast.inputseq else self.sequence_running_example
+		if not isinstance(example.val,str):
 			raise RASPTypeError("draw expects to evaluate sequence on string, got:",example)
-		unf.draw_comp_flow(example)
+		import DrawCompFlow; DrawCompFlow.draw_comp_flow(unf,example)
 		res = unf(example)
 		res.created_from_input = example
-		return JustVal(res)
+		return res
 
-	def assign(self,ast):
+	def assign(self,ast) -> list[NamedVal]:
 		def set_val_and_name(val,name):
 			self.env.set_variable(name,val)
 			if isinstance(val,Unfinished):
@@ -155,18 +152,12 @@ class Evaluator:
 
 		varnames = self._names_list(ast.var)
 		values = self.evaluateExprsList(ast.val)
-		if len(values)==1:
-			values = values[0]
-
-		if len(varnames)==1:
-			return set_val_and_name(values,varnames[0])
+		if len(varnames) == len(values):
+			return [set_val_and_name(val.val,name) for val,name in zip(values,varnames)]
+		elif len(values) == 1 and isinstance(values[0].val,Sized) and len(varnames) == len(values[0].val):
+			return [set_val_and_name(val,name) for val,name in zip(values[0].val,varnames)]
 		else:
-			if not len(varnames) == len(values):
-				raise RASPTypeError("expected",len(varnames),"values, but got:",len(values))
-			reslist = []
-			for v,name in zip(values,varnames):
-				reslist.append(set_val_and_name(v,name))
-			return NamedValList(reslist)
+			raise RASPTypeError("expected",len(varnames),"values, but got:",len(values))
 
 	def _names_list(self,ast):
 		idsList = self._get_first_cont_list(ast)
@@ -175,11 +166,11 @@ class Evaluator:
 	def _set_iterator_and_vals(self,iterator_names,iterator_vals):
 		if len(iterator_names)==1:
 			self.env.set_variable(iterator_names[0],iterator_vals)
-		elif isinstance(iterator_vals,Iterable) and (len(iterator_vals)==len(iterator_names)):
+		elif isinstance(iterator_vals,(Iterable,Sized)) and (len(iterator_vals)==len(iterator_names)):
 			for n,v in zip(iterator_names,iterator_vals):
 				self.env.set_variable(n,v)
 		else:
-			if not isinstance(iterator_vals,Iterable):
+			if not isinstance(iterator_vals,(Iterable,Sized)):
 				raise RASPTypeError("iterating with multiple iterator names, but got single iterator value:",iterator_vals)
 			else:
 				assert not (len(iterator_vals)==len(iterator_names)), "something wrong with Evaluator logic" # should work out by logic of last failed elif
@@ -187,7 +178,7 @@ class Evaluator:
 
 	def _evaluateDictComp(self,ast):
 		ast = ast.dictcomp
-		d = self.evaluateExpr(ast.iterable)
+		d = self.evaluateExpr(ast.iterable).val
 		if not (isinstance(d,list) or isinstance(d,dict)):
 			raise RASPTypeError("dict comprehension should have got a list or dict to loop over, but got:",l)
 		res = {}
@@ -197,15 +188,15 @@ class Evaluator:
 			self.env = self.env.make_nested()
 			self._set_iterator_and_vals(iterator_names,vals)
 			key = self.make_dict_key(ast.key)
-			res[key] = self.evaluateExpr(ast.val)
+			res[key] = self.evaluateExpr(ast.val).val
 			self.env = orig_env
 		return res
 
 
 	def _evaluateListComp(self,ast):
 		ast = ast.listcomp
-		l = self.evaluateExpr(ast.iterable)
-		if not (isinstance(l,list) or isinstance(l,dict)):
+		l = self.evaluateExpr(ast.iterable).val
+		if not isinstance(l,(list,dict)):
 			raise RASPTypeError("list comprehension should have got a list or dict to loop over, but got:",l)
 		res = []
 		iterator_names = self._names_list(ast.iterator) 
@@ -214,13 +205,13 @@ class Evaluator:
 			self.env = self.env.make_nested()
 			self._set_iterator_and_vals(iterator_names,vals) # sets inside the now-nested env - 
 			# don't want to keep the internal iterators after finishing this list comp
-			res.append(self.evaluateExpr(ast.val))
+			res.append(self.evaluateExpr(ast.val).val)
 			self.env = orig_env
 		return res
 
 	def forLoop(self,ast):
 		iterator_names = self._names_list(ast.iterator)
-		iterable = self.evaluateExpr(ast.iterable)
+		iterable = self.evaluateExpr(ast.iterable).val
 		if not (isinstance(iterable,list) or isinstance(iterable,dict)):
 			raise RASPTypeError("for loop needs to iterate over a list or dict, but got:",iterable)
 		statements = self._get_first_cont_list(ast.mainbody)
@@ -228,7 +219,7 @@ class Evaluator:
 			self._set_iterator_and_vals(iterator_names,vals)
 			for s in statements:
 				self.evaluate(s)
-		return JustVal(None)
+		return
 
 
 	def _get_first_cont_list(self,ast):
@@ -240,7 +231,7 @@ class Evaluator:
 			ast = ast.cont			
 		return res
 
-	def funcDef(self,ast):
+	def funcDef(self,ast) -> NamedVal:
 		funcname = ast.name.text
 		argname_trees = self._get_first_cont_list(ast.arguments)
 		argnames = [a.text for a in argname_trees]
@@ -248,10 +239,10 @@ class Evaluator:
 		returnexpr = ast.retstatement.res
 		res = RASPFunction(funcname,self.env,argnames,statement_trees,returnexpr,self.env.name)
 		self.env.set_variable(funcname,res)
-		return NamedVal(funcname,res)		
+		return NamedVal(funcname,res)
 
 	def _evaluateUnaryExpr(self,ast):
-		uexpr = self.evaluateExpr(ast.uexpr)
+		uexpr = self.evaluateExpr(ast.uexpr).val
 		uop = ast.uop.text
 		if uop =="not":
 			if isinstance(uexpr,UnfinishedSequence):
@@ -268,7 +259,7 @@ class Evaluator:
 			return round(uexpr)
 		if uop == "indicator":
 			if isinstance(uexpr,UnfinishedSequence):
-				name = "I("+uexpr.name+")"
+				name = "I("+uexpr.get_name()+")"
 				return zipmap(uexpr,lambda a:1 if a else 0,name=name).allow_suppressing_display()
 				# naming res makes RASP think it is important, i.e., 
 				# must always be displayed. but here it has only been named for clarity, so 
@@ -278,7 +269,7 @@ class Evaluator:
 		raise NotImplementedError
 
 	def _evaluateRange(self,ast):
-		valsList = self.evaluateExprsList(ast.rangevals)
+		valsList = [nval.val for nval in self.evaluateExprsList(ast.rangevals)]
 		if not len(valsList) in [1,2,3]:
 			raise RASPTypeError("wrong number of inputs to range, expected: 1, 2, or 3, got:",len(valsList))
 		for v in valsList:
@@ -318,8 +309,8 @@ class Evaluator:
 
 
 	def _evaluateIndexing(self,ast):
-		indexable = self.evaluateExpr(ast.indexable)
-		index = self.evaluateExpr(ast.index)
+		indexable = self.evaluateExpr(ast.indexable).val
+		index = self.evaluateExpr(ast.index).val
 		
 		if isinstance(indexable,list) or isinstance(indexable,str):
 			return self._index_into_list_or_str(indexable,index)
@@ -332,8 +323,8 @@ class Evaluator:
 								 "but instead got:",strdesc(indexable))
 
 	def _evaluateSelectExpr(self,ast):
-		key = self.evaluateExpr(ast.key)
-		query = self.evaluateExpr(ast.query)
+		key = self.evaluateExpr(ast.key).val
+		query = self.evaluateExpr(ast.query).val
 		sop = ast.selop.text
 		key = toseq(key) # in case got an atom in one of these, 
 		query = toseq(query) # e.g. selecting 0th index: indices @= 0
@@ -351,39 +342,39 @@ class Evaluator:
 			return select(query,key,lambda q,k:q<=k)
 
 	def _evaluateBinaryExpr(self,ast):
-		def has_sequence(l,r):
+		def either_sequence(l,r):
 			return isinstance(l,UnfinishedSequence) or isinstance(r,UnfinishedSequence)
-		def has_selector(l,r):
+		def either_selector(l,r):
 			return isinstance(l,UnfinishedSelect) or isinstance(r,UnfinishedSelect)
-		def both_selectors(l,r):
+		def both_selector(l,r):
 			return isinstance(l,UnfinishedSelect) and isinstance(r,UnfinishedSelect)
-		left = self.evaluateExpr(ast.left)
-		right = self.evaluateExpr(ast.right)
+		left = self.evaluateExpr(ast.left).val
+		right = self.evaluateExpr(ast.right).val
 		bop = ast.bop.text
 		bad_pair = RASPTypeError("Cannot apply and/or between selector and non-selector")
 		if bop=="and":
-			if has_sequence(left,right):
-				if has_selector(left,right):
+			if either_sequence(left,right):
+				if either_selector(left,right):
 					raise bad_pair
 				return tpland(left,right)
-			elif has_selector(left,right):
-				if not both_selectors(left,right):
+			elif either_selector(left,right):
+				if not both_selector(left,right):
 					raise bad_pair
 				return and_selects(left,right)
 			else:
 				return (left and right)
 		elif bop=="or":
-			if has_sequence(left,right):
-				if has_selector(left,right):
+			if either_sequence(left,right):
+				if either_selector(left,right):
 					raise bad_pair
 				return tplor(left,right)
-			elif has_selector(left,right):
-				if not both_selectors(left,right):
+			elif either_selector(left,right):
+				if not both_selector(left,right):
 					raise bad_pair
 				return or_selects(left,right)
 			else:
 				return (left or right)
-		if has_selector(left,right):
+		if either_selector(left,right):
 			raise RASPTypeError("Cannot apply",bop,"to selector(s)")
 		elif bop == "+":
 			return left + right
@@ -420,22 +411,24 @@ class Evaluator:
 		raise NotImplementedError
 
 	def _evaluateTernaryExpr(self,ast):
-		cond = self.evaluateExpr(ast.cond)
+		cond = self.evaluateExpr(ast.cond).val
 		if isinstance(cond,Unfinished):
-			res1 = self.evaluateExpr(ast.res1)
-			res2 = self.evaluateExpr(ast.res2)
+			res1 = self.evaluateExpr(ast.res1).val
+			res2 = self.evaluateExpr(ast.res2).val
 			cond, res1, res2 = tuple(map(toseq,(cond,res1,res2)))
-			return zipmap((cond,res1,res2),lambda c,r1,r2:r1 \
-				if c else r2,name=res1.name+" if "+cond.name+" else "+res2.name).allow_suppressing_display()
+			return zipmap((cond,res1,res2),
+			    lambda c,r1,r2: r1 if c else r2,
+			    name=res1.get_name()+" if "+cond.get_name()+" else "+res2.get_name()
+			).allow_suppressing_display()
 		else:
-			return self.evaluateExpr(ast.res1) if cond else self.evaluateExpr(ast.res2) 
+			return self.evaluateExpr(ast.res1).val if cond else self.evaluateExpr(ast.res2).val
 			# lazy eval when cond is non-unfinished allows legal loops over actual atoms
 
 	def _evaluateAggregateExpr(self,ast):
-		sel = self.evaluateExpr(ast.sel)
-		seq = self.evaluateExpr(ast.seq)
+		sel = self.evaluateExpr(ast.sel).val
+		seq = self.evaluateExpr(ast.seq).val
 		seq = toseq(seq) # just in case its an atom
-		default = self.evaluateExpr(ast.default) if ast.default else None
+		default = self.evaluateExpr(ast.default).val if ast.default else None
 
 		if not isinstance(sel,UnfinishedSelect):
 			raise RASPTypeError("Expected selector, got:",strdesc(selector))
@@ -449,7 +442,7 @@ class Evaluator:
 
 	def _evaluateZip(self,ast):
 		list_exps = self._get_first_cont_list(ast.lists)
-		lists = [self.evaluateExpr(e) for e in list_exps]
+		lists = [self.evaluateExpr(e).val for e in list_exps]
 		if not lists:
 			raise RASPTypeError("zip needs at least one list")
 		for i,l in enumerate(lists):
@@ -462,47 +455,46 @@ class Evaluator:
 		return [list(v) for v in zip(*lists)] # keep everything lists, no tuples/lists mixing here, all the same to rasp (no stuff like append etc)
 
 	def make_dict_key(self,ast):
-		res = self.evaluateExpr(ast)
+		res = self.evaluateExpr(ast).val
 		if not isatom(res):
 			raise RASPTypeError("dictionary keys can only be atoms, but instead got:",strdesc(res))
 		return res
 
 	def _evaluateDict(self,ast):
 		named_exprs_list = self._get_first_cont_list(ast.dictContents)
-		return {self.make_dict_key(e.key):self.evaluateExpr(e.val) for e in named_exprs_list}
+		return {self.make_dict_key(e.key):self.evaluateExpr(e.val).val for e in named_exprs_list}
 
 	def _evaluateList(self,ast):
 		exprs_list = self._get_first_cont_list(ast.listContents)
-		return [self.evaluateExpr(e) for e in exprs_list]
+		return [self.evaluateExpr(e).val for e in exprs_list]
 
-	def _evaluateApplication(self,ast,unf):
+	def _evaluateApplication(self,ast,unf:Unfinished):
 		input_vals = self._get_first_cont_list(ast.inputexprs)
 		if not len(input_vals) == 1:
 			raise ArgsError("evaluate unfinished",1,len(input_vals))
-		input_val = self.evaluateExpr(input_vals[0])
-		if not isinstance(unf,Unfinished):
-			raise RASPTypeError("Applying unfinished expects to apply",encoder_name,"or selector, got:",strdesc(sel))
+		input_val = self.evaluateExpr(input_vals[0]).val
+		# if not isinstance(unf,Unfinished): # impossible
+		# 	raise RASPTypeError("Applying unfinished expects to apply",encoder_name,"or selector, got:",strdesc(sel))
 		if not isinstance(input_val,Iterable):
 			raise RASPTypeError("Applying unfinished expects iterable input, got:",strdesc(input_val))
 		res = unf(input_val)
 		res.created_from_input = input_val
 		return res
 
-	def _evaluateRASPFunction(self,ast,raspfun):
+	def _evaluateRASPFunction(self,ast,raspfun:RASPFunction) -> NamedVal:
 		args_trees = self._get_first_cont_list(ast.inputexprs)
-		args = tuple(self.evaluateExpr(t) for t in args_trees) + (self,)
-		real_args = args[:-1]
-		res = raspfun(*args)
-		if isinstance(res,Unfinished):
-			res.setname(raspfun.name+"("+" , ".join(strdesc(a,desc_cap=20) for a in real_args)+")")
+		args = tuple(self.evaluateExpr(t).val for t in args_trees) + (self,)
+		res: NamedVal = raspfun(*args)
+		if isinstance(res.val,Unfinished):
+			res.val.setname(raspfun.name+"("+" , ".join(strdesc(a,desc_cap=20) for a in args[:-1])+")")
 		return res
 
 
 	def _evaluateContains(self,ast):
-		contained = self.evaluateExpr(ast.contained)
-		container = self.evaluateExpr(ast.container)
-		container_name = ast.container.var.text if ast.container.var \
-							else str(container) 
+		contained = self.evaluateExpr(ast.contained).val
+		container = self.evaluateExpr(ast.container).val
+		container_name = \
+			ast.container.var.text if ast.container.var else str(container)
 		if isinstance(contained,UnfinishedSequence):
 			if not isinstance(container,list):
 				raise RASPTypeError("\"["+encoder_name+"] in X\" expects X to be "\
@@ -530,68 +522,62 @@ class Evaluator:
 			raise RASPTypeError("\"A in X\" expects A to be",encoder_name,"or atom, but got A:",strdesc(contained))
 
 	def _evaluateLen(self,ast):
-		singleList = self.evaluateExpr(ast.singleList)
+		singleList = self.evaluateExpr(ast.singleList).val
 		if not isinstance(singleList,list) or isinstance(singleList,dict):
 			raise RASPTypeError("attempting to compute length of non-list:",strdesc(singleList))
 		return len(singleList)
 
-	def evaluateExprsList(self,ast):
+	def evaluateExprsList(self,ast) -> list[NamedVal]:
 		exprsList = self._get_first_cont_list(ast)
 		return [self.evaluateExpr(v) for v in exprsList]
 
-	def evaluateExpr(self,ast,from_top=False):
-		def format_return(res,resname="out",is_application_of_unfinished=False):
-			ast.evaled_value = res
-			if is_application_of_unfinished:
-				return JustVal(res)
-			else:
-				self.env.set_out(res)
-				if from_top:
-					return NamedVal(resname, res) # this is when an expression has been evaled
-				else:
-					return res
+	def evaluateExpr(self,ast) -> NamedVal:
+		#print(ast.getText())
+		def mkNamedVal(val,name:str="out") -> NamedVal:
+			assert not isinstance(val,NamedVal)
+			ast.evaled_value = val
+			self.env.set_out(val)
+			return NamedVal(name, val)
 		if ast.bracketed: # in parentheses - get out of them
-			return self.evaluateExpr(ast.bracketed,from_top=from_top)
+			return self.evaluateExpr(ast.bracketed)
 		if ast.var: # calling single variable
-			varname = ast.var.text
-			return format_return(self.env.get_variable(varname),resname=varname)
+			return mkNamedVal(self.env.get_variable(ast.var.text),name=ast.var.text)
 		if ast.standalone:
-			return format_return(self._evaluateStandalone(ast.standalone))
+			return mkNamedVal(self._evaluateStandalone(ast.standalone))
 		if ast.bop:
-			return format_return(self._evaluateBinaryExpr(ast))
+			return mkNamedVal(self._evaluateBinaryExpr(ast))
 		if ast.uop:
-			return format_return(self._evaluateUnaryExpr(ast))
+			return mkNamedVal(self._evaluateUnaryExpr(ast))
 		if ast.cond:
-			return format_return(self._evaluateTernaryExpr(ast))
+			return mkNamedVal(self._evaluateTernaryExpr(ast))
 		if ast.aggregate:
-			return format_return(self._evaluateAggregateExpr(ast.aggregate))
+			return mkNamedVal(self._evaluateAggregateExpr(ast.aggregate))
 		if ast.unfORfun:
-			unfORfun = self.evaluateExpr(ast.unfORfun)
+			unfORfun = self.evaluateExpr(ast.unfORfun).val
 			if isinstance(unfORfun,Unfinished):
-				return format_return(self._evaluateApplication(ast,unfORfun),
-									 is_application_of_unfinished=True)
+				return mkNamedVal(self._evaluateApplication(ast,unfORfun))
 			elif isinstance(unfORfun,RASPFunction):
-				return format_return(self._evaluateRASPFunction(ast,unfORfun))	
+				return self._evaluateRASPFunction(ast,unfORfun)
 		if ast.selop:
-			return format_return(self._evaluateSelectExpr(ast))
+			return mkNamedVal(self._evaluateSelectExpr(ast))
 		if ast.aList():
-			return format_return(self._evaluateList(ast.aList()))
+			return mkNamedVal(self._evaluateList(ast.aList()))
 		if ast.aDict():
-			return format_return(self._evaluateDict(ast.aDict()))
+			return mkNamedVal(self._evaluateDict(ast.aDict()))
 		if ast.indexable: # indexing into a list, dict, or s-op
-			return format_return(self._evaluateIndexing(ast))
+			return mkNamedVal(self._evaluateIndexing(ast))
 		if ast.rangevals:
-			return format_return(self._evaluateRange(ast))
+			return mkNamedVal(self._evaluateRange(ast))
 		if ast.listcomp:
-			return format_return(self._evaluateListComp(ast))
+			return mkNamedVal(self._evaluateListComp(ast))
 		if ast.dictcomp:
-			return format_return(self._evaluateDictComp(ast))
+			return mkNamedVal(self._evaluateDictComp(ast))
 		if ast.container:
-			return format_return(self._evaluateContains(ast))
+			return mkNamedVal(self._evaluateContains(ast))
 		if ast.lists:
-			return format_return(self._evaluateZip(ast))
+			return mkNamedVal(self._evaluateZip(ast))
 		if ast.singleList:
-			return format_return(self._evaluateLen(ast))
+			return mkNamedVal(self._evaluateLen(ast))
 		raise NotImplementedError
 
 		

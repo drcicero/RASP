@@ -11,15 +11,15 @@ def add_ops(Class,apply_unary_op,apply_binary_op):
 			assert len(a) in [1,2]
 			if len(a)==2:
 				a0,a1 = a if not rev else (a[1],a[0])
-				name0 = a0.name if hasattr(a0,"name") else str(a0)
-				name1 = a1.name if hasattr(a1,"name") else str(a1)
+				name0 = a0.get_name() if hasattr(a0,"get_name") else str(a0)
+				name1 = a1.get_name() if hasattr(a1,"get_name") else str(a1)
 				# a0/a1 might not be an seq, just having an op on it with an seq.
 				name = name0 + " " + opname + " " + name1
 			else: # len(a)==1
 				name = opname + " " +a[0].name
 			name = "( "+name+" )" # probably going to be composed with more ops, so...
 			return f(*a).setname(name).allow_suppressing_display()
-			 # seqs created as parts of long sequences of operators 
+			# seqs created as parts of long sequences of operators
 			# may be suppressed in display, the final name of the whole composition will be 
 			# sufficiently informative.
 			# have to set always_display to false *after* the setname, because setname marks 

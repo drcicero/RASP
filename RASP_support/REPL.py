@@ -1,21 +1,18 @@
 from antlr4 import CommonTokenStream, InputStream
 from collections.abc import Iterable
+import traceback
 
 from zzantlr.RASPLexer import RASPLexer
 from zzantlr.RASPParser import RASPParser
-from zzantlr.RASPVisitor import RASPVisitor
 
 from Environment import Environment, UndefinedVariable, ReservedName
 from FunctionalSupport import UnfinishedSequence, UnfinishedSelect, Unfinished
-from Evaluator import Evaluator, NamedVal, NamedValList, JustVal, \
-				RASPFunction, ArgsError, RASPTypeError, RASPValueError
+from Evaluator import Evaluator, NamedVal, RASPFunction, ArgsError, RASPTypeError, RASPValueError
 from Support import Select, Sequence, lazy_type_check
 
-encoder_name = "s-op"
+from typing import Union
 
-class LazyPrint:
-	def __init__(self,*a,**kw):
-		self.a, self.kw = a, kw
+encoder_name = "s-op"
 
 debug = False
 
@@ -64,7 +61,7 @@ class REPL:
 			self.printing = tmp
 
 
-	def set_running_example(self,example,which="both"):
+	def set_running_example(self,example,which):
 		if which in ["both",encoder_name]:
 			self.sequence_running_example = example
 		if which in ["both","selector"]:
@@ -74,24 +71,19 @@ class REPL:
 		print("RASP 0.0")
 		print("running example is:",self.sequence_running_example)
 
-	def print_just_val(self,justval):
-		val = justval.val
+	def print_named_val(self,name,val,ntabs=0,extra_first_pref=""):
+		if (None is name) and isinstance(val,Unfinished):
+			name = val.name
+		pref="\t"*ntabs
 		if None is val:
 			return
 		elif isinstance(val,Select):
-			print("\t = ")
+			print(pref," = ")
 			print_select(val.created_from_input,val)
 		elif isinstance(val,Sequence) and self.sequence_prints_verbose:
-			print("\t = ",end="")
+			print(pref," = ",end="")
 			print_seq(val.created_from_input,val,still_on_prev_line=True)
-		else:
-			print("\t = ",str(val).replace("\n","\n\t\t\t"))
-
-	def print_named_val(self,name,val,ntabs=0,extra_first_pref=""):
-		pref="\t"*ntabs
-		if (None is name) and isinstance(val,Unfinished):
-			name = val.name
-		if isinstance(val,UnfinishedSequence):
+		elif isinstance(val,UnfinishedSequence):
 			print(pref,extra_first_pref,"   "+encoder_name+":",name)
 			if self.show_sequence_examples:
 				if self.sequence_prints_verbose:
@@ -112,7 +104,7 @@ class REPL:
 		elif isinstance(val,list):
 			named = "   list: "+((name+" = ") if None is not name else "")
 			print(pref,extra_first_pref,named,end="")
-			flat = not any(isinstance(v,list) or isinstance(v,dict) or isinstance(v,Unfinished) for v in val)
+			flat = not any(isinstance(v,(list,dict,Unfinished)) for v in val)
 			if flat:
 				print(val)
 			else:
@@ -123,7 +115,7 @@ class REPL:
 		elif isinstance(val,dict):
 			named = "   dict: "+((name+" = ") if None is not name else "")
 			print(pref,extra_first_pref,named,end="")
-			flat = not any(isinstance(val[v],list) or isinstance(val[v],dict) or isinstance(val[v],Unfinished) for v in val)
+			flat = not any(isinstance(val[v],(list,dict,Unfinished)) for v in val)
 			if flat:
 				print(val)
 			else:
@@ -131,9 +123,8 @@ class REPL:
 				for v in val:
 					self.print_named_val(None,val[v],ntabs=ntabs+3,extra_first_pref=formatstr(v)+" : ")
 				print(pref," "*len(named),"}")
-
 		else:
-			print(pref,"   value:",((name+" = ") if None is not name else ""),formatstr(val))
+			print(pref,(("value: "+name+" =") if name not in [None, "", "out"] else "="),formatstr(val).replace("\n","\n\t\t\t"))
 
 	def print_example(self,nres):
 		if nres.subset in ["both",encoder_name]:
@@ -144,16 +135,13 @@ class REPL:
 	def print_result(self,rp):
 		if rp is None:
 			return
-		elif isinstance(rp,LazyPrint):
-			print(*rp.a, **rp.kw)
 		elif isinstance(rp,NamedVal):
 			self.print_named_val(rp.name,rp.val)
 		elif isinstance(rp,ReturnExample):
 			self.print_example(rp)
-		elif isinstance(rp,JustVal):
-			self.print_just_val(rp)
+		elif debug:
+			raise TypeError("something went wrong, wrong type in result_to_print -- ", rp)
 		else:
-			if debug: raise TypeError("something went wrong, wrong type in result_to_print -- ", rp)
 			print("something went wrong, wrong type in result_to_print -- ", rp)
 
 	def evaluate_replstatement(self,ast):
@@ -168,8 +156,9 @@ class REPL:
 		elif ast.exit():
 			raise EOFError
 		else:
-			if debug: raise NotImplemented
-			print("something went wrong, wrong type in result_to_print -- ", rp, res)
+			if debug:
+				raise NotImplemented
+			print("something went wrong, wrong type in result_to_print -- ", ast)
 
 	def toggleSeqVerbose(self,ast):
 		switch = ast.switch.text
@@ -191,7 +180,7 @@ class REPL:
 		return ReturnExample(subset)
 
 	def setExample(self,ast):
-		example = Evaluator(self.env,self).evaluateExpr(ast.example)
+		example = Evaluator(self.env,self).evaluateExpr(ast.example).val
 		if not isinstance(example,Iterable):
 			raise RASPTypeError("example not iterable: "+str(example))
 		subset = ast.subset
@@ -200,17 +189,17 @@ class REPL:
 		#return ReturnExample(subset)
 		return None # dont print anything
 
-	def loadFile(self,ast,calling_env):
+	def loadFile(self,ast,calling_env) -> None:
 #		if None is calling_env:
 #			calling_env = self.env
 		libname = ast.filename.text[1:-1]
 		filename = libname + ".rasp"
 		try:
 			with open(filename,"r") as f:
-				prev_example_settings = self.show_sequence_examples, self.show_selector_examples
-				self.show_sequence_examples, self.show_selector_examples = False, False
+				tmp1, tmp2, self.show_sequence_examples, self.show_selector_examples = \
+					self.show_sequence_examples, self.show_selector_examples, False, False
 				self.run(fromfile=f,env=Environment(name=libname,parent_env=self.base_env,stealing_env=calling_env))
-				self.show_sequence_examples, self.show_selector_examples = prev_example_settings
+				self.show_sequence_examples, self.show_selector_examples = tmp1, tmp2
 		except FileNotFoundError:
 			raise LoadError("could not find file: "+filename)
 
@@ -261,9 +250,7 @@ class REPL:
 			elif tree.replstatement():
 				return [self.evaluate_replstatement(tree.replstatement())]
 			elif tree.raspstatement(): 
-				# TODO make Evaluator return list of named vals instead of namedvallist?
 				res = Evaluator(env,self).evaluate(tree.raspstatement())
-				res = res.nvs if isinstance(res,NamedValList) else [res]
 				return [r for r in res if self.assigned_to_top(r,env)]
 			else: # if not replstatement or raspstatement, then comment
 				return []
@@ -275,16 +262,16 @@ class REPL:
 			print("\t\t!!ignoring input:\n\t",e)
 		return []
 
-	def careful_print(self, rps):
+	def careful_print(self, rps: list[Union[NamedVal, None]]):
 		# TODO: some error messages are still rising up and getting printed before reaching this position :(
 
-		# rps is a list of NamedVals and LazyPrints
+		# rps is a list of NamedVals
 		# go backwards - print last occurence of name per NamedVal, elminate other duplicate occurences
 		names = set()
 		for i,r in reversed(list(enumerate(rps))):
 			if isinstance(r,NamedVal):
 				if r.name in names:
-					r[i] = None
+					rps[i] = None
 				names.add(r.name)
 
 		# print list
@@ -442,7 +429,8 @@ def print_select(example,select,extra_pref=""):
 		return " ".join("1" if v else " " for v in m)
 	print(extra_pref,"\t\t\t    "," ".join(str(v) for v in example))
 	matrix = select.get_vals()
-	[print(extra_pref,"\t\t\t",v,"|",nice_matrix_line(matrix[m])) for v,m in zip(example,matrix)]
+	for v,m in zip(example,matrix):
+		print(extra_pref,"\t\t\t",v,"|",nice_matrix_line(matrix[m]))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
-import functools
-from copy import deepcopy # dont let them mutate the things i'm allowing them to have as vals
+import traceback
+from copy import deepcopy  # dont let them mutate the things i'm allowing them to have as vals
 import pprint
+
 
 class RASPError(Exception):
 	def __init__(self,*a):
@@ -20,28 +21,28 @@ class SupportException(Exception):
 	def __init__(self,m):
 		Exception.__init__(self,m)
 
+# treat (int,float) as float
+# (but don't actually change the ints to floats, want neat printouts)
+TNAME = {bool:"bool",str:"string",int:"int",float:"float",(int,float):"float"}
+NUMTYPES = [TNAME[int],TNAME[float],TNAME[(int,float)]]
 TBAD = "bad"
-TNAME = {bool:"bool",str:"string",int:"int",float:"float"}
-NUMTYPES = [TNAME[int],TNAME[float]]
 
 def lazy_type_check(vals):
-	for t in [str,bool,int,float]:
-		b = [isinstance(v,t) for v in vals]
-		if False not in b:
+	# all vals need to have same type of [str, bool, int, float], or
+	# also, vals be mixed (int, float), treat those as floats
+	for t in [str,bool,int,float,(int,float)]:
+		if all(isinstance(v,t) for v in vals):
 			return TNAME[t]
-	# allow vals to also be mixed integers and ints, treat those as floats 
-	# (but don't actually change the ints to floats, want neat printouts)
-	b = [(isinstance(v,int) or isinstance(v,float)) for v in vals]
-	if False not in b:
-		return TNAME[float]
 	return TBAD
 
 class Sequence:
 	def __init__(self,vals):
 		self.type = lazy_type_check(vals)
 		if self.type == TBAD:
-			raise RASPTypeError("attempted to create sequence with vals of different types:",vals)
+			#import sys; traceback.print_stack(file=sys.stdout)
+			raise RASPTypeError("attempted to create sequence with vals of invalid or different types:",vals)
 		self._vals = vals
+		self.created_from_input = None
 
 	def __str__(self):
 		# return "Sequence"+str([small_str(v) for v in self._vals])
@@ -69,6 +70,7 @@ class Select:
 		self.n = n
 		self.makeselect(q_vars,k_vars,f)
 		self.niceprint = None
+		self.created_from_input = None
 
 	def get_vals(self):
 		if None is self.select:
@@ -174,10 +176,10 @@ def apply_average_select(select,k_vars,func,default=0):
 			if n == 1:
 				return vals[scores.index(True)]
 			# else # n>1
-			if not (lazy_type_check(vals) in NUMTYPES):
+			if lazy_type_check(vals) not in NUMTYPES:
 				raise Exception("asked to average multiple values, but they are non-numbers: "+str(vals))
-			return sum([v for s,v in zip(scores,vals) if s])*1.0/n 
-	
+			return sum(v for s,v in zip(scores,vals) if s)*1.0/n
+
 		num_influencers = index_scores.count(True)
 		if num_influencers == 0:
 			return default

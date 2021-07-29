@@ -1,8 +1,7 @@
-from FunctionalSupport import UnfinishedSelect, Unfinished, UnfinishedSequence, \
-							  guarded_contains, guarded_compare, indices, base_tokens, tokens_asis
+from FunctionalSupport import Unfinished, \
+							guarded_contains, base_tokens, tokens_asis
 from Support import clean_val
 import analyse # adds useful functions to all the unfinisheds
-from analyse import UnfinishedFunc
 import os
 from copy import copy
 import string
@@ -19,10 +18,10 @@ select_off_colour = head_color
 
 def windows_path_cleaner(s):
 	if os.name == "nt": # is windows
-	    validchars = "-_.() "+string.ascii_letters+string.digits
-	    def fix(c):
-	    	return c if c in validchars else "."
-	    return "".join([fix(c) for c in s])
+		validchars = "-_.() "+string.ascii_letters+string.digits
+		def fix(c):
+			return c if c in validchars else "."
+		return "".join([fix(c) for c in s])
 	else:
 		return s
 
@@ -46,12 +45,8 @@ QVAR, KVAR, VVAR, VREAL, RES, INPUT = ["QVAR","KVAR","VVAR","VREAL","RES","INPUT
 POSS_ROWS = [QVAR,KVAR,VVAR,VREAL,RES,INPUT]
 ROW_NAMES = {QVAR:"Me",KVAR:"Other",VVAR:"X",VREAL:"f(X)",RES:"FF",INPUT:""} 
 
-def UnfinishedFunc(f):
-	setattr(Unfinished,f.__name__,f)
-
-@UnfinishedFunc
-def last_val(self):	
-	return self.last_res.get_vals()
+#def UnfinishedFunc(f):
+#	setattr(Unfinished,f.__name__,f)
 
 def makeQKStable(qvars,kvars,select,ref_in_g):
 	qvars = [q.last_val() for q in qvars]
@@ -231,7 +226,7 @@ class Table:
 		# because add_cell cares about current length of 'cells'
 		if self.add_rowtype_cell:
 			add_cell(ROW_NAMES[row_type],qkvr_colour)
-		add_cell(seq.name,name_colour)
+		add_cell(seq.get_name(),name_colour)
 		for v in seq.last_val():
 			add_cell(v,data_colour)
 		if self.note_res_dependencies:
@@ -330,7 +325,7 @@ class Head:
 			def headlabel():
 				# return self.head_primitives.select.name
 				return 'head '+str(self.i)+\
-							"\n("+self.head_primitives.select.name+")"
+							"\n("+self.head_primitives.select.get_name()+")"
 			head.attr(fillcolor=head_color, label=headlabel(), 
 								fontcolor='black', style='filled')
 			with head.subgraph(name=self.name+"_select_parts") as sel:
@@ -371,7 +366,7 @@ class Head:
 		for s in self.subheads:
 			s.add_edges(g,select_vals)
 		self.add_organising_edges(g)
-			
+
 def contains_tokens(mvs):
 	return next((True for mv in mvs if guarded_contains(base_tokens,mv)),False)
 
@@ -465,10 +460,10 @@ class CompFlow:
 		self.add_organising_edges(g)
 		[l.add_edges(g) for l in self.layers]
 
-@UnfinishedFunc
+#@UnfinishedFunc
 def draw_comp_flow(self,w,filename=None,
 				keep_dot=False,show=True,
-				force_vertical_layers=True, add_tokens_on_ff=False): 
+				force_vertical_layers=True, add_tokens_on_ff=False):
 	if not None is w:
 		self(w) # execute seq (and all its ancestors) on the given input w. 
 		# if w==None, assume seq has already been executed on some input.

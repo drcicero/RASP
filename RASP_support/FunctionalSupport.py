@@ -12,7 +12,6 @@ plain_unfinished_sequence_name = "s-op"
 plain_indices = "indices"
 plain_tokens = "tokens"
 
-
 # unique ids for all Unfinished objects, numbered by order of creation. ends up very useful sometimes
 class NextId:
 	def __init__(self):
@@ -24,9 +23,6 @@ class NextId:
 unique_id_maker = NextId()
 def creation_order_id():
 	return unique_id_maker.get_next()
-
-
-
 
 class AlreadyPrintedTheException:
 	def __init__(self):
@@ -47,18 +43,31 @@ class Unfinished:
 		self.setname(name if not self.is_toplevel_input else "input")
 		self.creation_order_id = creation_order_id()
 		self.min_poss_depth = min_poss_depth
+		self.name = None
+
+	def get_name(self):
+		if self.name is None or len(self.name) > name_maxlen:
+			if isinstance(self,UnfinishedSequence):
+				return plain_unfinished_sequence_name
+			elif isinstance(self,UnfinishedSelect):
+				return plain_unfinished_select_name
+			elif isinstance(self,UnfinishedSequencesTuple):
+				return "plain unfinished tuple"
+			else:
+				return plain_unfinished_name
+		return self.name
+
+	def last_val(self):	
+		return self.last_res.get_vals()
+
+	#def draw_comp_flow(self,*a,**kw):
+	#	import DrawCompFlow
+	#	DrawCompFlow.draw_comp_flow(self,*a,**kw)
 
 	def setname(self,name,always_display_when_named=True):
-		if not None is name:
-			if len(name)>name_maxlen:
-				if isinstance(self,UnfinishedSequence):
-					name = plain_unfinished_sequence_name
-				elif isinstance(self,UnfinishedSelect):
-					name = plain_unfinished_select_name
-				else:
-					name = plain_unfinished_name
-			self.name = name
-			self.always_display = always_display_when_named # if you set something's name, you probably want to see it
+		assert name is not None
+		self.name = name
+		self.always_display = always_display_when_named # if you set something's name, you probably want to see it
 		return self # return self to allow chaining with other calls and throwing straight into a return statement etc
 
 	def __call__(self,w,print_all_named_sequences=False,print_input=False,
@@ -87,12 +96,12 @@ class Unfinished:
 					if not global_printed.b:
 						print("===============================================================")
 						print("===============================================================")
-						print("evaluation failed in: [",self.name,"] with exception:\n",e)
+						print("evaluation failed in: [",self.get_name(),"] with exception:\n",e)
 						print("===============================================================")
 						print("parent values are:")
 						for p in self.parents_tuple:
 							print("=============")
-							print(p.name)
+							print(p.get_name())
 							print(p.last_res)
 						print("===============================================================")
 						print("===============================================================")
@@ -129,7 +138,7 @@ class Unfinished:
 class UnfinishedSequence(Unfinished):
 	def __init__(self,parents_tuple,parents2self,name=plain_unfinished_sequence_name,
 	elementwise_function=None,default=None,min_poss_depth=0,from_zipmap=False,
-	output_index=-1,definitely_uses_identity_function=False): 
+	output_index=-1,definitely_uses_identity_function=False):
 	# min_poss_depth=0 starts all of the base sequences (eg indices) off right
 		if None is name: # might have got none from some default value, fix it before continuing because later things eg DrawCompFlow
 			name = plain_unfinished_sequence_name  # will expect name to be a string
@@ -143,7 +152,7 @@ class UnfinishedSequence(Unfinished):
 		self._constant = False
 
 	def __str__(self):
-		return "UnfinishedSequence object, name: "+self.name+" id: "+str(self.creation_order_id)
+		return "UnfinishedSequence(name="+self.get_name()+",id="+str(self.creation_order_id)+")"
 	def mark_as_constant(self):
 		self._constant = True
 		return self
@@ -169,7 +178,7 @@ class UnfinishedSelect(Unfinished):
 		# they can be same head
 		self.orig_selector = orig_selector # for comfortable compositions of selectors
 	def __str__(self):
-		return "UnfinishedSelect object, name: "+self.name+" id: "+str(self.creation_order_id)
+		return "UnfinishedSelect(name="+self.name+",id="+str(self.creation_order_id)+")"
 
 
 # some tiny bit of sugar that fits here:
@@ -201,7 +210,7 @@ class UnfinishedSequencesTuple(Unfinished):
 			parents_tuple = to_tuple_of_unfinishedseqs(parents_tuple)
 			assert is_sequence_of_unfinishedseqs(parents_tuple) and isinstance(parents_tuple,tuple)
 		# else - probably creating several sequences at once from one aggregate
-		super(UnfinishedSequencesTuple, self).__init__(parents_tuple,parents2self,name="plain unfinished tuple")
+		super(UnfinishedSequencesTuple, self).__init__(parents_tuple,parents2self)
 	def __add__(self,other):
 		assert isinstance(other,UnfinishedSequencesTuple)
 		assert self.parents2self is tup2tup
