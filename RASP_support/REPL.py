@@ -1,6 +1,5 @@
 from antlr4 import CommonTokenStream, InputStream
 from collections.abc import Iterable
-import traceback
 
 from zzantlr.RASPLexer import RASPLexer
 from zzantlr.RASPParser import RASPParser
@@ -39,6 +38,9 @@ def formatstr(res):
 	return str(res)
 
 class REPL:
+	__slots__ = ["env","sequence_running_example","selector_running_example","sequence_prints_verbose",
+	             "show_sequence_examples","show_selector_examples","printing", "print_buffer", "base_env"]
+
 	def __init__(self):
 		self.env = Environment(name="console")
 		self.sequence_running_example = "hello"
@@ -47,6 +49,9 @@ class REPL:
 		self.show_sequence_examples = True
 		self.show_selector_examples = True
 		self.printing = True
+		self.print_buffer: list[Union[NamedVal, str]] = []
+		self.base_env = None
+
 		self.print_welcome()
 		self.load_base_libraries_and_make_base_env()
 
@@ -56,10 +61,13 @@ class REPL:
 		# the base libraries to build the actual base env
 		for l in ["RASP_support/rasplib"]:
 			tmp, self.printing = self.printing, False
-			self.run_tree(None,"load \""+l+"\";",self.env)
+			_ = self.run_tree(None,"load \""+l+"\";",self.env)
 			self.base_env = self.env.snapshot()
 			self.printing = tmp
-
+			for i,r in enumerate(self.print_buffer):
+				if isinstance(r, NamedVal):
+					self.print_buffer[i] = None
+			self.flush()
 
 	def set_running_example(self,example,which):
 		if which in ["both",encoder_name]:
@@ -124,7 +132,7 @@ class REPL:
 					self.print_named_val(None,val[v],ntabs=ntabs+3,extra_first_pref=formatstr(v)+" : ")
 				print(pref," "*len(named),"}")
 		else:
-			print(pref,(("value: "+name+" =") if name not in [None, "", "out"] else "="),formatstr(val).replace("\n","\n\t\t\t"))
+			print(pref,(("   value: "+name+" = ") if name not in [None, "", "out"] else "= "),formatstr(val).replace("\n","\n\t\t\t"))
 
 	def print_example(self,nres):
 		if nres.subset in ["both",encoder_name]:
@@ -135,6 +143,8 @@ class REPL:
 	def print_result(self,rp):
 		if rp is None:
 			return
+		elif isinstance(rp, str):
+			print(rp)
 		elif isinstance(rp,NamedVal):
 			self.print_named_val(rp.name,rp.val)
 		elif isinstance(rp,ReturnExample):
@@ -196,27 +206,28 @@ class REPL:
 		filename = libname + ".rasp"
 		try:
 			with open(filename,"r") as f:
-				tmp1, tmp2, self.show_sequence_examples, self.show_selector_examples = \
-					self.show_sequence_examples, self.show_selector_examples, False, False
+				tmp1, tmp2, tmp3, self.show_sequence_examples, self.show_selector_examples, self.printing = \
+					self.show_sequence_examples, self.show_selector_examples, self.printing, False, False, False
 				self.run(fromfile=f,env=Environment(name=libname,parent_env=self.base_env,stealing_env=calling_env))
+				self.printing = tmp3
+				self.flush()
 				self.show_sequence_examples, self.show_selector_examples = tmp1, tmp2
 		except FileNotFoundError:
 			raise LoadError("could not find file: "+filename)
 
-	def run_tree(self,fromfile,fromline,env):
+	def run_tree(self,fromfile,fromline,env) -> bool:
 		try:
 			tree = LineReader(fromfile=fromfile,fromline=fromline).get_input_tree()
 			if isinstance(tree,Stop):
 				return False # stop running
-			rps = self.evaluate_tree(tree,env)
-			if self.printing:
-				self.careful_print(rps)
+			self.print_buffer += self.evaluate_tree(tree, env)
+			self.flush()
 		except AntlrException as e:
 			print("\t!! antlr exception:",e.msg,"\t-- ignoring input")
 		except RASPTypeError as e:
 			print("\t!!statement executed, but result fails on evaluation:\n\t\t",e)
 		except EOFError:
-			print() # newline
+			#print() # newline
 			return False # stop running
 		except KeyboardInterrupt:
 			print() # newline
@@ -249,50 +260,48 @@ class REPL:
 				return []
 			elif tree.replstatement():
 				return [self.evaluate_replstatement(tree.replstatement())]
-			elif tree.raspstatement(): 
+			elif tree.raspstatement():
 				res = Evaluator(env,self).evaluate(tree.raspstatement())
 				return [r for r in res if self.assigned_to_top(r,env)]
 			else: # if not replstatement or raspstatement, then comment
 				return []
 		except (UndefinedVariable, ReservedName) as e:
-			print("\t\t!!ignoring input:\n\t",e)
+			return ["\t\t!!ignoring input:\n\t "+str(e)]
 		except NotImplementedError:
-			print("not implemented this command yet! ignoring")
+			return ["not implemented this command yet! ignoring"]
 		except (ArgsError,RASPTypeError,LoadError,RASPValueError) as e:
-			print("\t\t!!ignoring input:\n\t",e)
-		return []
+			return ["\t\t!!ignoring input:\n\t "+str(e)]
 
-	def careful_print(self, rps: list[Union[NamedVal, None]]):
+	def flush(self):
+		#print(self.printing, self.print_buffer)
+		if not self.printing:
+			return
 		# TODO: some error messages are still rising up and getting printed before reaching this position :(
 
 		# rps is a list of NamedVals
 		# go backwards - print last occurence of name per NamedVal, elminate other duplicate occurences
 		names = set()
-		for i,r in reversed(list(enumerate(rps))):
+		for i,r in reversed(list(enumerate(self.print_buffer))):
 			if isinstance(r,NamedVal):
 				if r.name in names:
-					rps[i] = None
+					self.print_buffer[i] = None
 				names.add(r.name)
-
 		# print list
-		for r in rps:
+		for r in self.print_buffer:
 			self.print_result(r)
-
-
-
-
+		self.print_buffer.clear()
 
 	def run(self,fromfile=None,env=None):
 		env = self.env if env is None else env
 		running = True
 		while running:
 			running = self.run_tree(fromfile,None,env)
+			self.flush()
 
 
 
 
 from antlr4.error.ErrorListener import ErrorListener
-
 
 class AntlrException(Exception):
 	def __init__(self,msg):
@@ -333,6 +342,7 @@ class Stop:
 		pass
 
 class LineReader:
+	__slots__ = ["fromfile","fromline","prompt","cont_prompt"]
 	def __init__(self,prompt=">>",fromfile=None,fromline=None):
 		self.fromfile = fromfile
 		self.fromline = fromline
@@ -350,7 +360,6 @@ class LineReader:
 		parser.addErrorListener( MyErrorListener() )
 		return parser
 
-
 	def read_line(self,continuing=False,nest_depth=0):
 		prompt = self.cont_prompt if continuing else self.prompt
 		if not None is self.fromfile:
@@ -363,13 +372,12 @@ class LineReader:
 		else:
 			return input(prompt+("  "*nest_depth))
 
-
 	def get_input_tree(self):
-		pythoninput=""
+		pythoninput = ""
 		multiline = False
 		while True:
 			newinput = self.read_line(continuing=multiline,
-								nest_depth=pythoninput.split().count("def"))
+			                          nest_depth=pythoninput.split().count("def"))
 			if isinstance(newinput,Stop): # input stream ended
 				return Stop()
 			if is_comment(newinput):
@@ -388,12 +396,11 @@ class LineReader:
 				pythoninput+=" "
 
 
-
 def print_seq(example,seq,still_on_prev_line=False,extra_pref="",lastpref_if_shortprint=""):
 	if len(set(seq.get_vals()))==1:
 		print(extra_pref if not still_on_prev_line else "",
 				lastpref_if_shortprint,
-				str(seq),end=" ") 
+				str(seq),end=" ")
 		print("[skipped full display: identical values]")# when there is only one value, it's nicer to just print that than the full list, verbosity be damned
 		return
 	if still_on_prev_line:
@@ -415,11 +422,11 @@ def print_seq(example,seq,still_on_prev_line=False,extra_pref="",lastpref_if_sho
 	seq = [str(v) for v in seq]
 	maxlen = max(len(v) for v in example+seq)
 
-
 	def neatline(seq):
 		def padded(s):
 			return " "*(maxlen-len(s))+s
 		return " ".join(padded(v) for v in seq)
+
 	print(extra_pref,"\t\tinput:  ",neatline(example),"\t","("+lazy_type_check(example)+"s)")
 	print(extra_pref,"\t\toutput: ",neatline(seq),"\t","("+seqtype+"s)")
 
@@ -431,7 +438,6 @@ def print_select(example,select,extra_pref=""):
 	matrix = select.get_vals()
 	for v,m in zip(example,matrix):
 		print(extra_pref,"\t\t\t",v,"|",nice_matrix_line(matrix[m]))
-
 
 if __name__ == "__main__":
 	myrepl = REPL().run()
